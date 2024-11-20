@@ -55,6 +55,9 @@ def create_handle_rx(device_address, device_name):
         message = data.decode('utf-8')
         buffers[device_address] += message
 
+        # Print received raw data
+        print(f"[{time_str}] Received raw data from {device_address}: {message}")
+
         # Check if the buffer contains an underscore
         if '_' in buffers[device_address]:
             complete_message, remaining = buffers[device_address].split('_', 1)
@@ -70,6 +73,7 @@ def create_handle_rx(device_address, device_name):
             # Check if an hour has passed to rotate the file
             if datetime.now() - file_timestamps[device_address] >= timedelta(hours=1):
                 rotate_csv_writer(device_name, device_address)
+
 
     return handle_rx
 
