@@ -18,34 +18,76 @@ csv_writers = {}  # Dictionary to store CSV writers for each device
 csv_files = {}  # Dictionary to store file objects for each device
 file_timestamps = {}  # Dictionary to store the timestamp for each device's current file
 
+
 def create_csv_writer(device_name, device_address):
     current_time = datetime.now()
     file_timestamps[device_address] = current_time
 
-    # Create a valid filename by replacing invalid characters
+    # Create the directory for sensor data
     sanitized_device_name = device_name.replace(" ", "_").replace(":", "_")
-    if not os.path.exists(sanitized_device_name):
-        os.mkdir(sanitized_device_name)
-    
-    filename = f"{device_address.replace(':', '_')}_{current_time.strftime('%Y%m%d_%H%M%S')}.csv"
-    filepath = os.path.join(sanitized_device_name, filename)
+    base_path = os.path.join("sensor_data", sanitized_device_name)
+    if not os.path.exists(base_path):
+        os.makedirs(base_path)
+
+    # Generate the filename and full file path using device name
+    filename = f"{sanitized_device_name}_{current_time.strftime('%Y%m%d_%H%M%S')}.csv"
+    filepath = os.path.join(base_path, filename)
 
     csv_file = open(filepath, mode='w', newline='')
     writer = csv.writer(csv_file)
 
     # Write header
-    writer.writerow(["Date", "Time", "Address", "Raw Data"])
+    writer.writerow(["Date", "Time", "Device Name", "accel.X", "accel.Y", "accel.Z", "gyro.X", "gyro.Y", "gyro.Z", "temp.O", "temp.A", "battery.V"])
     return writer, csv_file
 
+
 def get_current_csv_writer(device_address):
-    writer, csv_file = csv_writers[device_address], csv_files[device_address]
-    return writer, csv_file
+    return csv_writers[device_address], csv_files[device_address]
+
 
 def rotate_csv_writer(device_name, device_address):
     csv_file = csv_files[device_address]
     csv_file.close()
     writer, csv_file = create_csv_writer(device_name, device_address)
     csv_writers[device_address], csv_files[device_address] = writer, csv_file
+
+
+def parse_complete_message(complete_message, device_address):
+    """
+    Parses the complete message and returns a dictionary with the parsed values.
+    """
+    parsed_data = {
+        "accel.X": "",
+        "accel.Y": "",
+        "accel.Z": "",
+        "gyro.X": "",
+        "gyro.Y": "",
+        "gyro.Z": "",
+        "temp.O": "",
+        "temp.A": "",
+        "battery.V": ""
+    }
+
+    try:
+        if "A:" in complete_message and ";G:" in complete_message:
+            # Parse accelerometer and gyroscope data
+            accel_part, gyro_part = complete_message.split(";G:")
+            _, accel_values = accel_part.split("A:")
+            parsed_data["accel.X"], parsed_data["accel.Y"], parsed_data["accel.Z"] = map(float, accel_values.split(","))
+            parsed_data["gyro.X"], parsed_data["gyro.Y"], parsed_data["gyro.Z"] = map(float, gyro_part.split(","))
+
+        if "V:" in complete_message and ";T:" in complete_message:
+            # Parse voltage and temperature data
+            voltage_part, temp_part = complete_message.split(";T:")
+            _, voltage_value = voltage_part.split("V:")
+            temp_values = temp_part.split(",")
+            parsed_data["battery.V"] = float(voltage_value)
+            parsed_data["temp.O"], parsed_data["temp.A"] = map(float, temp_values)
+    except ValueError as e:
+        print(f"Error parsing message: {complete_message}. Error: {e}")
+
+    return parsed_data
+
 
 def create_handle_rx(device_address, device_name):
     async def handle_rx(sender: str, data: bytearray):
@@ -55,18 +97,18 @@ def create_handle_rx(device_address, device_name):
         message = data.decode('utf-8')
         buffers[device_address] += message
 
-        # Print received raw data
-        print(f"[{time_str}] Received raw data from {device_address}: {message}")
-
         # Check if the buffer contains an underscore
         if '_' in buffers[device_address]:
             complete_message, remaining = buffers[device_address].split('_', 1)
-            print(f"[{time_str}] Received complete message from {device_address}: {complete_message}")
+            print(f"[{time_str}] Received complete message from {device_name}: {complete_message}")
             buffers[device_address] = remaining
+
+            # Parse the complete message
+            parsed_data = parse_complete_message(complete_message, device_address)
 
             # Write to CSV
             writer, csv_file = get_current_csv_writer(device_address)
-            row = [date_str, time_str, device_address, complete_message]
+            row = [date_str, time_str, device_name] + list(parsed_data.values())
             writer.writerow(row)
             csv_file.flush()
 
@@ -74,8 +116,8 @@ def create_handle_rx(device_address, device_name):
             if datetime.now() - file_timestamps[device_address] >= timedelta(hours=1):
                 rotate_csv_writer(device_name, device_address)
 
-
     return handle_rx
+
 
 async def connect_and_init_device(device, device_name):
     client = BleakClient(device.address)
@@ -106,6 +148,7 @@ async def connect_and_init_device(device, device_name):
 
     return None
 
+
 async def handle_device_connection(device, device_name):
     while True:
         try:
@@ -124,7 +167,7 @@ async def handle_device_connection(device, device_name):
                     # Send termination command
                     term_command = b"T"
                     await client.write_gatt_char(NUS_RX_UUID, term_command)
-                    print(f"Sent termination command: 'T'' to {client.address}")
+                    print(f"Sent termination command: 'T' to {client.address}")
                     await client.stop_notify(NUS_TX_UUID)
                     await client.disconnect()
                     print(f"Disconnected from {client.address}")
@@ -138,12 +181,14 @@ async def handle_device_connection(device, device_name):
         print(f"Retrying connection to {device.address} after 5 seconds...")
         await asyncio.sleep(5)
 
+
 def signal_handler(signal, frame):
     print('SIGINT received, shutting down.')
     for client in clients:
         if client.is_connected:
             asyncio.get_event_loop().run_until_complete(client.disconnect())
     sys.exit(0)
+
 
 async def main():
     print("Scanning for devices...")
@@ -178,6 +223,7 @@ async def main():
 
     # Run tasks concurrently
     await asyncio.gather(*tasks)
+
 
 if __name__ == "__main__":
     # Set the signal handler for SIGINT
