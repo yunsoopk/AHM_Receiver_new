@@ -98,6 +98,9 @@ def create_handle_rx(device_address, device_name):
             writer.writerow(row)
             csv_file.flush()
 
+            # Print received data for visibility
+            print(f"[{device_name}] {row}")
+
     return handle_rx
 
 
@@ -137,7 +140,7 @@ async def scan_and_connect():
 async def periodic_disconnect_and_scan():
     while True:
         current_time = datetime.now()
-        if current_time.minute % 5 == 0:
+        if current_time.minute % 10 == 0:
             print("Performing scheduled disconnect and scan...")
             await disconnect_all()
             await scan_and_connect()
